@@ -1,165 +1,220 @@
+#include <DHT.h>
+#include <DHT_U.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
-
+#include "Log.h"
+#include "TempHu.h"
 #include "FirebaseESP8266.h"
 #include <ESP8266WiFi.h>
 
+// Firebase
 #define FIREBASE_HOST "plant-eed41.firebaseio.com"
 #define FIREBASE_AUTH "DnrFaWiCaJreAB5JeLR7YbiqEJ5KKCwKr0kJEbaa"
 #define WIFI_SSID "Poil"
 #define WIFI_PASSWORD "poildepoche"
 
 FirebaseData firebaseData;
+FirebaseJsonArray firebaseJsonArray;
 
+// Firebase navigation
+const String divider = "/";
+const String logsPath = "logs";
+int nextIndex = 0;
+
+// Time and Date
 const long utcOffsetInSeconds = -14400;
-char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 String formattedDate;
 
+// Temp and Humidity sensor
+#define DHTPIN 4
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+TempHu tempHu;
+
+bool testLog = false;
+
 void setup()
 {
-  pinMode(5, OUTPUT);
-  digitalWrite(5, HIGH);
+    Serial.begin(115200);
 
-  Serial.begin(115200);
+    setupDHT();
 
-  setup_wifi();
+    setupWifi();
 
-  setup_firebase();
+    setupFirebase();
 
-  setup_time();
+    setupTime();
 
-  //5. Try to set int data to Firebase
-  //The set function returns bool for the status of operation
-  //firebaseData requires for sending the data
-  if (Firebase.setInt(firebaseData, "/LED_Status", 1))
-  {
-    //Success
-    Serial.println("Set int data success");
+    getNextLogIndex();
+}
 
-  } else {
-    //Failed?, get the error reason from firebaseData
+void setupFirebase()
+{
+    Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
 
-    Serial.print("Error in setInt, ");
-    Serial.println(firebaseData.errorReason());
-  }
+    // Enable auto reconnect the WiFi when connection lost
+    Firebase.reconnectWiFi(true);
 
+    //Set the size of WiFi rx/tx buffers in the case where we want to work with large data.
+    firebaseData.setBSSLBufferSize(1024, 1024);
 
-  //6. Try to get int data from Firebase
-  //The get function returns bool for the status of operation
-  //firebaseData requires for receiving the data
-  if (Firebase.getInt(firebaseData, "/LED_Status"))
-  {
-    //Success
-    Serial.print("Get int data success, int = ");
-    Serial.println(firebaseData.intData());
+    //Set the size of HTTP response buffers in the case where we want to work with large data.
+    firebaseData.setResponseSize(1024);
+}
 
-  } else {
-    //Failed?, get the error reason from firebaseData
+void setupDHT()
+{
+    dht.begin();
+}
 
-    Serial.print("Error in getInt, ");
-    Serial.println(firebaseData.errorReason());
-  }
+void setupWifi()
+{
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    Serial.print("Connecting to Wi-Fi");
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        Serial.print(".");
+        delay(300);
+    }
+    Serial.println();
+    Serial.print("Connected with IP: ");
+    Serial.println(WiFi.localIP());
+    Serial.println();
+}
 
-  /*
+void setupTime()
+{
+    timeClient.begin();
+}
 
-    In case where you want to set other data types i.e. bool, float, double and String, you can use setBool, setFloat, setDouble and setString.
-    If you want to get data which you known its type at specific node, use getInt, getBool, getFloat, getDouble, getString.
-    If you don't know the data type at specific node, use get and check its type.
+int getNextLogIndex()
+{
+    nextIndex = 0;
 
-    The following shows how to get the variant data
+    Serial.println("Getting last Index");
+    while (Firebase.get(firebaseData, divider + logsPath + divider + nextIndex) && firebaseData.dataType() != "null")
+    {
+        Serial.println("PASSED");
+        Serial.println("PATH: " + firebaseData.dataPath());
+        Serial.println("TYPE: " + firebaseData.dataType());
+        nextIndex++;
+    }
+    Serial.println(nextIndex);
+}
 
-  */
+void sendLog(Log log)
+{
+    // create json object to share with database
+    FirebaseJson logJson;
 
-  if (Firebase.get(firebaseData, "/LED_Status"))
-  {
-    //Success
-    Serial.print("Get variant data success, type = ");
-    Serial.println(firebaseData.dataType());
+    // set dateTime
+    logJson.set("time", log.dateTime);
 
-    if (firebaseData.dataType() == "int") {
-      Serial.print("data = ");
-      Serial.println(firebaseData.intData());
-    } else if (firebaseData.dataType() == "bool") {
-      if (firebaseData.boolData())
-        Serial.println("data = true");
-      else
-        Serial.println("data = false");
+    // set current Temp and Humidity
+    logJson.set("current" + divider + "temperature", log.tempHu.temperature);
+    logJson.set("current" + divider + "humidity", log.tempHu.humidity);
+    logJson.set("Current" + divider + "soil_moisture", log.tempHu.soilMoisture);
+
+    // set target Temp Humidity
+    logJson.set("target" + divider + "temperature", log.targetTempHu.temperature);
+    logJson.set("target" + divider + "humidity", log.targetTempHu.humidity);
+    logJson.set("target" + divider + "soil_moisture", log.targetTempHu.soilMoisture);
+
+    Serial.println("SET");
+    if (Firebase.set(firebaseData, logsPath + divider + nextIndex, logJson))
+    {
+        Serial.println("PASSED");
+    }
+    else
+    {
+        firebaseFail();
     }
 
-  } else {
-    //Failed?, get the error reason from firebaseData
-
-    Serial.print("Error in get, ");
-    Serial.println(firebaseData.errorReason());
-  }
-
-  /*
-
-    If you want to get the data in realtime instead of using get, see the stream examples.
-    If you want to work with JSON, see the FirebaseJson, jsonObject and jsonArray examples.
-
-    If you have questions or found the bugs, feel free to open the issue here https://github.com/mobizt/Firebase-ESP8266
-
-  */
-
-
-
-
+    nextIndex++;
 }
 
-void setup_firebase() {
-  Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
-
-  // Enable auto reconnect the WiFi when connection lost
-  Firebase.reconnectWiFi(true);
+void firebaseFail()
+{
+    Serial.println("FAILED");
+    Serial.println("REASON: " + firebaseData.errorReason());
+    Serial.println("------------------------------------");
+    Serial.println();
 }
 
-void setup_wifi() {
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to Wi-Fi");
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    Serial.print(".");
-    delay(300);
-  }
-  Serial.println();
-  Serial.print("Connected with IP: ");
-  Serial.println(WiFi.localIP());
-  Serial.println();
+void printPretty(FirebaseJson json)
+{
+    String jsonStr;
+    json.toString(jsonStr, true);
+    Serial.println(jsonStr);
 }
-
-void setup_time(){
-  timeClient.begin();
-}
-
 
 void loop()
 {
-  timeClient.update();
-  Serial.println(timeClient.getFullFormattedTime());
+    timeClient.update();
+    formattedDate = timeClient.getFullFormattedTime();
 
-  delay(1000);
-//  int sensorValue = analogRead(A0);
-//
-//  if (Firebase.setInt(firebaseData, "/sensor_value", sensorValue))
-//  {
-//    //Success
-//    Serial.println("Set int data success");
-//
-//  } else {
-//    //Failed?, get the error reason from firebaseData
-//
-//    Serial.print("Error in setInt, ");
-//    Serial.println(firebaseData.errorReason());
-//  }
-//
-//  delay(3000);
+    getTempHu();
+
+    if (testLog)
+        sendTestLog();
+
+    delay(3000);
 }
-//
-//class Log {
-//    int temperature;
-//    int humidity;
-//
-//}
+
+void sendTestLog()
+{
+    float hum = 3;
+    float temp = 24;
+    float soil = 19;
+    float targetTemp = 20;
+    float targetHum = 2;
+    float targetSoil = 11;
+
+    TempHu t1 = TempHu(temp, hum, soil);
+    TempHu t2 = TempHu(targetTemp, targetHum, targetSoil);
+
+    Log log = Log(formattedDate, t1, t2);
+
+    sendLog(log);
+}
+
+void getTempHu()
+{
+    // Reading temperature or humidity takes about 250 milliseconds!
+    // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
+    float h = dht.readHumidity();
+    float t = dht.readTemperature();
+
+    // Check if any reads failed and exit early.
+    if (isnan(h) || isnan(t))
+    {
+        Serial.println(F("Failed to read from DHT sensor!"));
+        return;
+    }
+
+    float s = getSoilMoisture();
+    // float hic = dht.computeHeatIndex(t, h, false);
+
+    // Serial.print(F("Humidity: "));
+    // Serial.print(h);
+    // Serial.print(F("%  Temperature: "));
+    // Serial.print(t);
+    // Serial.print(F("°C "));
+    // Serial.print(F("Heat index: "));
+    // Serial.print(hic);
+    // Serial.print(F("°C "));
+
+    tempHu.temperature = t;
+    tempHu.humidity = h;
+    tempHu.soilMoisture = s;
+}
+
+void calibrateSoilMoistureSensor()
+{
+}
+
+float getSoilMoisture()
+{
+}
